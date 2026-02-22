@@ -1,0 +1,7 @@
+langchain4j:
+    open-ai:
+        chat-model:
+            api-key: lmstudio
+            model-name: gpt-4o
+            log-requests: true
+            log-responses: true
