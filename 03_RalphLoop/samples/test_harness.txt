@@ -1,0 +1,123 @@
+Java Test Harness Requirements: Integration Testing
+
+1. Parameterized Input & Execution
+External Data Binding: Support for JSON, YAML, and CSV sources to decouple test logic from input values.
+Junit 5 / TestNG Native Support: Use of @ParameterizedTest or @DataProvider for running single test cases across multiple datasets.
+Dynamic Context Injection: Ability to override environment-specific variables (URLs, API keys) at runtime.
+Scenario-Based Flows: Support for multi-step test sequences where output from step A becomes input for step B.
+
+2. Service Stubbing & Mocking
+Out-of-Process Stubbing: Integration with WireMock or MockServer to simulate downstream REST/gRPC dependencies.
+Stateful Behaviors: Ability to configure stubs that change responses based on previous calls (e.g., simulating a "Created" state).
+Fault Injection: Simulation of network latency, connection timeouts, and 5xx errors to test circuit breakers.
+Message Broker Emulation: Support for mocking asynchronous events (Kafka, RabbitMQ) using Testcontainers.
+
+3. Data Synthesis & Management
+Faker Integration: Use of libraries like Datafaker to generate realistic, non-repeating PII (names, addresses, IDs).
+Schema-Aware Generation: Automated payload creation based on OpenAPI, Swagger, or Avro/Protobuf definitions.
+Database Containerization: Lifecycle management of ephemeral databases (PostgreSQL, MongoDB) via Testcontainers.
+Referential Integrity: Logic to maintain consistent IDs across different synthesized datasets and service calls.
+
+4. Observability & Reporting
+Trace Propagation: Support for passing trace-id headers to ensure stubs appear in distributed tracing (Jaeger/Zipkin).
+Payload Logging: Automatic capture of request/response bodies for failed assertions to speed up debugging.
+Standardized Output: Generation of Allure or Surefire reports for CI/CD integration.
+
+
+
+
+{
+  "phase" : "integration-testing",
+  "feature" : "parameterized-input-execution",
+  "tasks" : [ {
+    "action" : "Initialize Maven project structure",
+    "description" : "Create standard Maven directory layout with src/main/java, src/test/java, and src/main/resources",
+    "dependencies" : [ ],
+    "acceptanceCriteria" : [ "Maven project structure exists with correct directory layout" ]
+  }, {
+    "action" : "Create pom.xml with dependencies",
+    "description" : "Define Maven build file with JUnit 5, TestNG, WireMock, Testcontainers, Faker, and reporting plugins",
+    "dependencies" : [ "Initialize Maven project structure" ],
+    "acceptanceCriteria" : [ "pom.xml compiles with all required dependencies and plugins" ]
+  }, {
+    "action" : "Define package structure",
+    "description" : "Create Java package hierarchy for all interfaces and classes",
+    "dependencies" : [ "Initialize Maven project structure" ],
+    "acceptanceCriteria" : [ "All packages exist: com.app.input.binding, com.app.test.runner, com.app.context, com.app.scenario, com.app.reporting" ]
+  }, {
+    "action" : "Define JSON input binding interface",
+    "description" : "Create interface for binding JSON test data",
+    "dependencies" : [ ],
+    "acceptanceCriteria" : [ "Interface JsonInputBinder defined in package com.app.input.binding with method bindFromJson" ]
+  }, {
+    "action" : "Implement JSON input binding class",
+    "description" : "Create class to handle JSON test data",
+    "dependencies" : [ "Define JSON input binding interface" ],
+    "acceptanceCriteria" : [ "Class JsonInputBinderImpl implements JsonInputBinder with method bindFromJson" ]
+  }, {
+    "action" : "Define YAML input binding interface",
+    "description" : "Create interface for binding YAML test data",
+    "dependencies" : [ ],
+    "acceptanceCriteria" : [ "Interface YamlInputBinder defined in package com.app.input.binding with method bindFromYaml" ]
+  }, {
+    "action" : "Implement YAML input binding class",
+    "description" : "Create class to handle YAML test data",
+    "dependencies" : [ "Define YAML input binding interface" ],
+    "acceptanceCriteria" : [ "Class YamlInputBinderImpl implements YamlInputBinder with method bindFromYaml" ]
+  }, {
+    "action" : "Define CSV input binding interface",
+    "description" : "Create interface for CSV test data binding",
+    "dependencies" : [ ],
+    "acceptanceCriteria" : [ "Interface CsvInputBinder defined in package com.app.input.binding with method bindFromCsv" ]
+  }, {
+    "action" : "Implement CSV input binding class",
+    "description" : "Create class to handle CSV test data",
+    "dependencies" : [ "Define CSV input binding interface" ],
+    "acceptanceCriteria" : [ "Class CsvInputBinderImpl implements CsvInputBinder with method bindFromCsv" ]
+  }, {
+    "action" : "Implement JUnit 5 parameterized test runner",
+    "description" : "Create runner for parameterized tests",
+    "dependencies" : [ "Define JSON input binding interface", "Define CSV input binding interface" ],
+    "acceptanceCriteria" : [ "Class Junit5TestRunner defined in package com.app.test.runner with method runParameterizedTest" ]
+  }, {
+    "action" : "Implement TestNG data provider runner",
+    "description" : "Create runner for TestNG parameterized tests",
+    "dependencies" : [ "Define JSON input binding interface", "Define CSV input binding interface" ],
+    "acceptanceCriteria" : [ "Class TestngRunner defined in package com.app.test.runner with method runDataProviderTest" ]
+  }, {
+    "action" : "Define dynamic context injection interface",
+    "description" : "Create interface for runtime variable injection",
+    "dependencies" : [ ],
+    "acceptanceCriteria" : [ "Interface DynamicContextInjector defined in package com.app.context with method injectVariables" ]
+  }, {
+    "action" : "Implement dynamic context injection class",
+    "description" : "Create class to handle runtime variable injection",
+    "dependencies" : [ "Define dynamic context injection interface" ],
+    "acceptanceCriteria" : [ "Class DynamicContextInjectorImpl implements DynamicContextInjector with method injectVariables" ]
+  }, {
+    "action" : "Define scenario-based flow manager interface",
+    "description" : "Create interface for multi-step test sequences",
+    "dependencies" : [ "Define dynamic context injection interface" ],
+    "acceptanceCriteria" : [ "Interface ScenarioFlowManager defined in package com.app.scenario with method executeScenario" ]
+  }, {
+    "action" : "Implement scenario-based flow manager",
+    "description" : "Create manager for multi-step test sequences",
+    "dependencies" : [ "Define scenario-based flow manager interface" ],
+    "acceptanceCriteria" : [ "Class ScenarioFlowManagerImpl implements ScenarioFlowManager with method executeScenario" ]
+  }, {
+    "action" : "Create resources folder with configurations",
+    "description" : "Set up application.properties, logback.xml, and test data file templates",
+    "dependencies" : [ "Initialize Maven project structure" ],
+    "acceptanceCriteria" : [ "Resources folder exists with application.properties, logback.xml, and JSON/YAML/CSV templates" ]
+  }, {
+    "action" : "Configure build plugins",
+    "description" : "Add Surefire and Allure reporting plugin configurations",
+    "dependencies" : [ "Create pom.xml with dependencies" ],
+    "acceptanceCriteria" : [ "pom.xml includes Surefire and Allure plugin configurations" ]
+  }, {
+    "action" : "Set Java version and encoding properties",
+    "description" : "Define Java version and encoding in build configuration",
+    "dependencies" : [ "Create pom.xml with dependencies" ],
+    "acceptanceCriteria" : [ "pom.xml includes Java version and encoding properties" ]
+  } ]
+}
