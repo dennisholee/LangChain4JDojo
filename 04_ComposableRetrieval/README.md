@@ -22,6 +22,7 @@ A clean-architecture Java 21 / Maven application that implements **Retrieval-Aug
 │  Ports  (core/port/)                                             │
 │  RetrieverPort         — retrieve(query, topK)                   │
 │  EmbeddingsPort        — embed(text)                             │
+│  TokenEmbeddingPort    — embed token units for ColBERT stage     │
 │  VectorStorePort       — upsert / search                         │
 │  DocumentIngestionPort — ingest(id, text)                        │
 └────────────────────────┬─────────────────────────────────────────┘
@@ -33,6 +34,9 @@ A clean-architecture Java 21 / Maven application that implements **Retrieval-Aug
 │  RetrieverPortContentRetrieverBridge — RetrieverPort→ContentRet. │
 │  ChromaEmbeddingStore — EmbeddingStore<TextSegment> via ChromaDB │
 │  DocumentIngestionAdapter — DocumentIngestionPort → embed+store  │
+│    ↳ precomputes token vectors into DocumentTokenVectorStore      │
+│  LangChainTokenEmbeddingAdapter — TokenEmbeddingPort impl         │
+│  DocumentTokenVectorStore — shared cache for token vectors        │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -44,7 +48,8 @@ A clean-architecture Java 21 / Maven application that implements **Retrieval-Aug
 | **LangChain4J RAG pipeline** | `RagService` uses `DefaultQueryRouter` (broadcasts to all `ContentRetriever`s) + `DefaultRetrievalAugmentor` + `AiServices` |
 | **Vector store** | `ChromaEmbeddingStore` implements `EmbeddingStore<TextSegment>`; vectors are stored in ChromaDB and queried via Chroma's vector search API |
 | **Bridge** | `RetrieverPortContentRetrieverBridge` adapts any `RetrieverPort` (core domain) to a LangChain4J `ContentRetriever` (framework) without coupling the core layer |
-| **Result reranking** | `RerankerPipelineAdapter` implements three-stage reranking: ColBERT semantic re-scoring, diversity penalty, LLM-as-a-Judge |
+| **Result reranking** | `RerankerPipelineAdapter` implements three-stage reranking: ColBERT-inspired token MaxSim re-scoring, diversity penalty, LLM-as-a-Judge |
+| **Token precompute** | `DocumentIngestionAdapter` precomputes token vectors at ingest time and stores them in `DocumentTokenVectorStore` for reranker reuse |
 
 ---
 
@@ -83,10 +88,16 @@ After composable retrieval merges results from multiple sources, a three-stage *
 ```
 
 ### Stage 1: ColBERT Semantic Re-Scoring
-- Embeds both the query and each result document using the configured embedding model
-- Computes cosine similarity between query and document embeddings
-- Replaces original retriever scores with semantic similarity scores
-- Results normalized to [0.0, 1.0] range
+- Uses a **ColBERT-inspired late interaction** approximation:
+    - Tokenizes query and document text into unigrams + bigrams
+    - Embeds token units via `TokenEmbeddingPort`
+    - Computes token-level MaxSim and averages over query tokens
+- Clarification: this is **not** a full ColBERT implementation (no contextualized token interaction model); it is a practical late-interaction approximation optimized for this lightweight Java stack.
+- Blends score signals for stability:
+    - `70%` ColBERT-inspired token MaxSim score
+    - `30%` bi-encoder query↔document cosine score
+- Replaces original retriever scores with stage-1 semantic score
+- Reuses precomputed document token vectors from `DocumentTokenVectorStore` when available (fallback to on-demand embedding)
 
 ### Stage 2: Diversity Penalty
 - Reduces scores for documents that are similar to higher-ranked results
@@ -97,8 +108,8 @@ After composable retrieval merges results from multiple sources, a three-stage *
 ### Stage 3: LLM-as-a-Judge
 - Uses the configured chat model to rank documents by relevance to the query
 - Sends a prompt asking the LLM which documents are most relevant
-- Parses LLM response to extract document IDs in ranked order
-- Assigns final scores based on LLM-judged rank position (1.0 → 0.9 → 0.8 → …)
+- Parses noisy/numbered LLM responses to extract document IDs in ranked order
+- Assigns final scores with smooth rank decay for ranked IDs; applies deterministic low-confidence fallback scores for unranked IDs
 - Provides fine-grained relevance assessment beyond pure embeddings
 
 ### Configuration
@@ -106,12 +117,17 @@ After composable retrieval merges results from multiple sources, a three-stage *
 The reranker pipeline is configured in `Main.java`:
 
 ```java
+TokenEmbeddingPort tokenEmbeddingPort = new LangChainTokenEmbeddingAdapter(embeddingModel);
+DocumentTokenVectorStore tokenVectorStore = DocumentTokenVectorStore.defaultStore();
+
 RerankerPort reranker = new RerankerPipelineAdapter(
-    embeddingModel,           // for ColBERT embeddings
-    chatModel,                // for LLM judge
-    0.8,                      // diversity similarity threshold
-    0.7,                      // diversity penalty multiplier
-    true                      // enable LLM judge (set false to skip stage 3)
+    embeddingModel,
+    tokenEmbeddingPort,
+    chatModel,
+    0.8,   // diversity similarity threshold
+    0.7,   // diversity penalty multiplier
+    true,  // enable LLM judge (set false to skip stage 3)
+    tokenVectorStore
 );
 
 List<RetrievalResult> reranked = reranker.rerank(query, composableResults);
@@ -171,7 +187,7 @@ Indexing 5 documents …
 Composable retrieval refers to … [LLM answer using the retrieved context]
 ```
 
-### 4 — Run unit tests (no API key needed)
+### 5 — Run unit tests (no API key needed)
 
 ```bash
 mvn test
@@ -183,7 +199,7 @@ mvn test
 
 ```
 src/
-├── main/java/com/example/
+├── main/java/io/forest/composableretrieval/
 │   ├── app/
 │   │   └── Main.java                          # Demo entry point
 │   ├── core/
@@ -191,22 +207,26 @@ src/
 │   │   │   ├── RetrieverPort.java             # Inbound port
 │   │   │   ├── RerankerPort.java              # Outbound port (reranking)
 │   │   │   ├── EmbeddingsPort.java            # Outbound port
+│   │   │   ├── TokenEmbeddingPort.java        # Outbound port (token-level embeddings)
 │   │   │   ├── VectorStorePort.java           # Outbound port
 │   │   │   └── DocumentIngestionPort.java     # Outbound port
 │   │   ├── ComposableRetriever.java           # Core domain (pure Java)
 │   │   └── RagService.java                    # Application service (LC4J RAG)
 │   └── adapters/
-│       ├── ChromaEmbeddingStore               # EmbeddingStore<TextSegment> via ChromaDB
 │       ├── EmbeddingStoreRetrieverAdapter.java# RetrieverPort + ContentRetriever
 │       ├── RetrieverPortContentRetrieverBridge.java # Core ↔ LC4J bridge
-│       ├── RerankerPipelineAdapter.java       # Three-stage reranking (ColBERT + Diversity + LLM Judge)
+│       ├── RerankerPipelineAdapter.java       # Three-stage reranking (ColBERT-inspired + Diversity + LLM Judge)
 │       ├── DocumentIngestionAdapter.java      # DocumentIngestionPort impl
+│       ├── LangChainTokenEmbeddingAdapter.java# TokenEmbeddingPort impl
+│       ├── DocumentTokenVectorStore.java      # Shared token-vector cache
+│       ├── ColbertTokenizationUtils.java      # Shared tokenization utility (unigrams+bigrams)
 │       ├── InMemoryRetrieverAdapter.java      # Example lexical retriever
 │       └── FileSystemRetrieverAdapter.java    # Example file retriever
-└── test/java/com/example/
-    ├── core/ComposableRetrieverTest.java          # Pure-Java unit tests (no I/O)
-    ├── app/AppConfigTest.java                     # Config loading tests
-    └── adapters/RerankerPipelineAdapterTest.java  # Reranker stage tests
+└── test/java/io/forest/composableretrieval/
+    ├── core/ComposableRetrieverTest.java              # Pure-Java unit tests (no I/O)
+    ├── app/AppConfigTest.java                         # Config loading tests
+    ├── adapters/RerankerPipelineAdapterTest.java      # Stage-level reranker tests
+    └── adapters/RerankerPipelineComparisonTest.java   # Relevance/comparison scenario tests
 ```
 
 ---
@@ -228,7 +248,7 @@ EmbeddingModel model = OllamaEmbeddingModel.builder()
     .baseUrl("http://localhost:11434")
     .modelName("nomic-embed-text")
     .build();
-LangChain4JEmbeddingsAdapter embedder = new LangChain4JEmbeddingsAdapter(model);
+// Use `model` directly where an EmbeddingModel is required.
 ```
 
 ### Customize reranking parameters
@@ -239,6 +259,7 @@ The `RerankerPipelineAdapter` supports configurable reranking:
 // Disable LLM judge, use only ColBERT + Diversity
 RerankerPort reranker = new RerankerPipelineAdapter(
     embeddingModel,
+    tokenEmbeddingPort,
     chatModel,
     0.75,   // lower threshold = stricter diversity penalty
     0.5,    // lower factor = stronger penalty for similar docs
@@ -251,12 +272,13 @@ Or use your own `RerankerPort` implementation:
 ```java
 public class CustomReranker implements RerankerPort {
     @Override
-    public List<RetrievalResult> rerank(String query, List<RetrievalResult> results) {
+    public List<RetrieverPort.RetrievalResult> rerank(
+            String query,
+            List<RetrieverPort.RetrievalResult> results) {
         // Your custom ranking logic here
         return results.stream()
             .sorted(/* custom comparator */)
             .toList();
     }
 }
-    .build();
 ```

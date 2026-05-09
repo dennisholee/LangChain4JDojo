@@ -1,9 +1,11 @@
 package io.forest.composableretrieval.app;
 
 import io.forest.composableretrieval.adapters.DocumentIngestionAdapter;
+import io.forest.composableretrieval.adapters.DocumentTokenVectorStore;
 import io.forest.composableretrieval.adapters.EmbeddingStoreRetrieverAdapter;
 import io.forest.composableretrieval.adapters.FileSystemRetrieverAdapter;
 import io.forest.composableretrieval.adapters.InMemoryRetrieverAdapter;
+import io.forest.composableretrieval.adapters.LangChainTokenEmbeddingAdapter;
 import io.forest.composableretrieval.adapters.RetrieverPortContentRetrieverBridge;
 import io.forest.composableretrieval.adapters.RerankerPipelineAdapter;
 import io.forest.composableretrieval.core.ComposableRetriever;
@@ -11,6 +13,7 @@ import io.forest.composableretrieval.core.RagService;
 import io.forest.composableretrieval.core.port.DocumentIngestionPort;
 import io.forest.composableretrieval.core.port.RerankerPort;
 import io.forest.composableretrieval.core.port.RetrieverPort;
+import io.forest.composableretrieval.core.port.TokenEmbeddingPort;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiEmbeddingModel;
@@ -101,8 +104,10 @@ public class Main {
         }
 
         // ── Ingestion (DocumentIngestionPort) ────────────────────────────────
+        TokenEmbeddingPort tokenEmbeddingPort = new LangChainTokenEmbeddingAdapter(embeddingModel);
+        DocumentTokenVectorStore tokenVectorStore = DocumentTokenVectorStore.defaultStore();
         DocumentIngestionPort ingestor =
-            new DocumentIngestionAdapter(embeddingModel, vectorStore);
+            new DocumentIngestionAdapter(embeddingModel, vectorStore, tokenEmbeddingPort, tokenVectorStore);
 
         List<String[]> documents = List.of(
             new String[]{"doc1", "LangChain4J is a Java library for building LLM-powered applications."},
@@ -148,10 +153,12 @@ public class Main {
         // ── Reranker pipeline (three stages) ──────────────────────────────────
         RerankerPort reranker = new RerankerPipelineAdapter(
             embeddingModel,
+            tokenEmbeddingPort,
             chatModel,
             0.8,   // diversity similarity threshold
             0.7,   // diversity penalty factor
-            true   // enable LLM-as-a-Judge
+            true,  // enable LLM-as-a-Judge
+            tokenVectorStore
         );
 
         // ── Demo: composable retrieval from multiple sources ──────────────────

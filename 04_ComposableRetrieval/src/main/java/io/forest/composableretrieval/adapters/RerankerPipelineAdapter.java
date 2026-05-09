@@ -2,14 +2,20 @@ package io.forest.composableretrieval.adapters;
 
 import io.forest.composableretrieval.core.port.RetrieverPort;
 import io.forest.composableretrieval.core.port.RerankerPort;
+import io.forest.composableretrieval.core.port.TokenEmbeddingPort;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.data.embedding.Embedding;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Three-stage reranking pipeline:
@@ -23,8 +29,15 @@ import java.util.Map;
  */
 public class RerankerPipelineAdapter implements RerankerPort {
 
+    private static final Pattern BULLET_PREFIX = Pattern.compile("^\\s*(?:[-*]|\\d+[.)])\\s*");
+
     private final EmbeddingModel embeddingModel;
+    private final TokenEmbeddingPort tokenEmbeddingPort;
     private final ChatLanguageModel chatModel;
+    private final DocumentTokenVectorStore documentTokenVectorStore;
+
+    // Cross-query cache for document token vectors to reduce repeated token embedding work.
+    private final Map<String, List<float[]>> documentTokenVectorCache;
 
     /** Similarity threshold above which diversity penalty is applied (0.0–1.0). */
     private final double diversitySimilarityThreshold;
@@ -47,11 +60,50 @@ public class RerankerPipelineAdapter implements RerankerPort {
             double diversitySimilarityThreshold,
             double diversityPenaltyFactor,
             boolean enableLlmJudge) {
+        this(
+                embeddingModel,
+                new LangChainTokenEmbeddingAdapter(embeddingModel),
+                chatModel,
+                diversitySimilarityThreshold,
+                diversityPenaltyFactor,
+                enableLlmJudge
+        );
+    }
+
+    public RerankerPipelineAdapter(
+            EmbeddingModel embeddingModel,
+            TokenEmbeddingPort tokenEmbeddingPort,
+            ChatLanguageModel chatModel,
+            double diversitySimilarityThreshold,
+            double diversityPenaltyFactor,
+            boolean enableLlmJudge) {
+        this(
+                embeddingModel,
+                tokenEmbeddingPort,
+                chatModel,
+                diversitySimilarityThreshold,
+                diversityPenaltyFactor,
+                enableLlmJudge,
+                DocumentTokenVectorStore.defaultStore()
+        );
+    }
+
+    public RerankerPipelineAdapter(
+            EmbeddingModel embeddingModel,
+            TokenEmbeddingPort tokenEmbeddingPort,
+            ChatLanguageModel chatModel,
+            double diversitySimilarityThreshold,
+            double diversityPenaltyFactor,
+            boolean enableLlmJudge,
+            DocumentTokenVectorStore documentTokenVectorStore) {
         this.embeddingModel = embeddingModel;
+        this.tokenEmbeddingPort = tokenEmbeddingPort;
         this.chatModel = chatModel;
         this.diversitySimilarityThreshold = diversitySimilarityThreshold;
         this.diversityPenaltyFactor = diversityPenaltyFactor;
         this.enableLlmJudge = enableLlmJudge;
+        this.documentTokenVectorStore = documentTokenVectorStore;
+        this.documentTokenVectorCache = new ConcurrentHashMap<>();
     }
 
     @Override
@@ -82,22 +134,46 @@ public class RerankerPipelineAdapter implements RerankerPort {
      */
     private List<RetrieverPort.RetrievalResult> stage1ColBertReScore(
             String query, List<RetrieverPort.RetrievalResult> results) throws Exception {
-        // Embed the query
+        // Embed the query once for bi-encoder fallback/stability blending.
         Embedding queryEmbedding = embeddingModel.embed(query).content();
         float[] queryVector = queryEmbedding.vector();
 
+        // Build query token vectors (unigrams + bigrams) to approximate ColBERT late interaction.
+        List<float[]> queryTokenVectors = buildTokenVectors(query);
+
         List<RetrieverPort.RetrievalResult> rescored = new ArrayList<>();
         for (RetrieverPort.RetrievalResult result : results) {
-            // Embed result text
+            // Embed result text for bi-encoder component.
             Embedding resultEmbedding = embeddingModel.embed(result.text()).content();
             float[] resultVector = resultEmbedding.vector();
+            double biEncoderSimilarity = cosineSimilarity(queryVector, resultVector);
 
-            // Compute cosine similarity
-            double similarity = cosineSimilarity(queryVector, resultVector);
+            // ColBERT-inspired MaxSim score (token-level late interaction approximation).
+            String cacheKey = documentTokenVectorStore.cacheKey(result.id(), result.text());
+            List<float[]> docTokenVectors = documentTokenVectorCache.computeIfAbsent(
+                    cacheKey,
+                    unused -> {
+                        List<float[]> precomputed = documentTokenVectorStore.get(cacheKey);
+                        if (precomputed != null) {
+                            return precomputed;
+                        }
 
-            // Use embedding similarity as new score (replaces original retriever score)
-            // Normalize to [0.0, 1.0] range (cosine similarity is already in [-1, 1], map to [0, 1])
-            double newScore = (similarity + 1.0) / 2.0;
+                        try {
+                            List<float[]> computed = buildTokenVectors(result.text());
+                            documentTokenVectorStore.put(cacheKey, computed);
+                            return computed;
+                        } catch (Exception e) {
+                            return List.of();
+                        }
+                    });
+
+            double colbertScore = computeColbertInspiredScore(queryTokenVectors, docTokenVectors);
+
+            // Blend with bi-encoder signal for stability while increasing ColBERT-like behavior.
+            double normalizedBiEncoder = (biEncoderSimilarity + 1.0) / 2.0;
+            double newScore = (0.7 * colbertScore) + (0.3 * normalizedBiEncoder);
+
+            // Use stage-1 semantic score as new score (replaces original retriever score).
 
             rescored.add(new RetrieverPort.RetrievalResult(result.id(), result.text(), newScore));
         }
@@ -141,6 +217,7 @@ public class RerankerPipelineAdapter implements RerankerPort {
             double score = current.score();
 
             // Check similarity to higher-ranked results (0..i-1)
+            double maxSimilarity = 0.0;
             for (int j = 0; j < i; j++) {
                 RetrieverPort.RetrievalResult higher = results.get(j);
                 float[] higherVector = docEmbeddings.get(higher.id());
@@ -148,11 +225,12 @@ public class RerankerPipelineAdapter implements RerankerPort {
                 double similarity = cosineSimilarity(currentVector, higherVector);
                 // Normalize similarity to [0, 1]
                 double normalizedSimilarity = (similarity + 1.0) / 2.0;
+                maxSimilarity = Math.max(maxSimilarity, normalizedSimilarity);
+            }
 
-                // Apply penalty if similar to higher-ranked result
-                if (normalizedSimilarity > diversitySimilarityThreshold) {
-                    score *= diversityPenaltyFactor;
-                }
+            // Apply at most one penalty per result to avoid over-penalizing dense topical clusters.
+            if (maxSimilarity > diversitySimilarityThreshold) {
+                score *= diversityPenaltyFactor;
             }
 
             penalized.add(new RetrieverPort.RetrievalResult(current.id(), current.text(), score));
@@ -195,14 +273,15 @@ public class RerankerPipelineAdapter implements RerankerPort {
 
         // Parse LLM response to extract document IDs in order
         List<String> rankedIds = new ArrayList<>();
+        Set<String> validIds = new HashSet<>();
+        for (RetrieverPort.RetrievalResult r : results) {
+            validIds.add(r.id());
+        }
+
         for (String line : llmResponse.split("\n")) {
-            String trimmed = line.trim();
-            if (!trimmed.isEmpty() && !trimmed.contains(":")) {
-                // Try to extract ID (may be surrounded by brackets or quotes)
-                trimmed = trimmed.replaceAll("[\\[\\]'\"]", "").trim();
-                if (!trimmed.isEmpty()) {
-                    rankedIds.add(trimmed);
-                }
+            String candidateId = extractDocumentIdFromLine(line, validIds);
+            if (candidateId != null) {
+                rankedIds.add(candidateId);
             }
         }
 
@@ -214,20 +293,26 @@ public class RerankerPipelineAdapter implements RerankerPort {
 
         // Rebuild results list in LLM-judged order with scores based on rank position
         List<RetrieverPort.RetrievalResult> judged = new ArrayList<>();
+        Set<String> usedIds = new HashSet<>();
+        int totalResults = results.size();
         for (int rank = 0; rank < rankedIds.size(); rank++) {
             String id = rankedIds.get(rank);
-            if (resultMap.containsKey(id)) {
+            if (resultMap.containsKey(id) && !usedIds.contains(id)) {
                 RetrieverPort.RetrievalResult original = resultMap.get(id);
-                // Score based on rank: first = 1.0, then 0.9, 0.8, ...
-                double judgedScore = Math.max(0.1, 1.0 - (rank * 0.1));
+                // Score based on rank with smooth decay (avoids large tie bands for bigger result sets).
+                double judgedScore = 1.0 - (rank / (double) (totalResults + 1));
                 judged.add(new RetrieverPort.RetrievalResult(original.id(), original.text(), judgedScore));
+                usedIds.add(id);
             }
         }
 
-        // Add any results not ranked by LLM at the end
+        // Add any results not ranked by LLM at the end with distinct low confidence scores.
+        int fallbackRank = 0;
         for (RetrieverPort.RetrievalResult r : results) {
-            if (!rankedIds.contains(r.id())) {
-                judged.add(new RetrieverPort.RetrievalResult(r.id(), r.text(), 0.1));
+            if (!usedIds.contains(r.id())) {
+                double fallbackScore = Math.max(0.001, 0.05 - (fallbackRank * 0.001));
+                judged.add(new RetrieverPort.RetrievalResult(r.id(), r.text(), fallbackScore));
+                fallbackRank++;
             }
         }
 
@@ -265,5 +350,79 @@ public class RerankerPipelineAdapter implements RerankerPort {
         }
 
         return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+    }
+
+    private static String extractDocumentIdFromLine(String line, Set<String> validIds) {
+        if (line == null) {
+            return null;
+        }
+
+        String trimmed = BULLET_PREFIX.matcher(line.trim()).replaceFirst("");
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+
+        // Strip wrappers and trailing explanation, e.g. "[doc1]: reason" or "doc1 - why".
+        String cleaned = trimmed.replaceAll("^[\\[('\\\"]+", "")
+                .replaceAll("[\\])'\\\"]+$", "")
+                .trim();
+        int sep = firstSeparatorIndex(cleaned);
+        if (sep > 0) {
+            cleaned = cleaned.substring(0, sep).trim();
+        }
+
+        if (validIds.contains(cleaned)) {
+            return cleaned;
+        }
+
+        // Fallback: search for any known ID token inside the line.
+        for (String id : validIds) {
+            Pattern tokenPattern = Pattern.compile("(^|[^a-zA-Z0-9_-])" + Pattern.quote(id) + "([^a-zA-Z0-9_-]|$)");
+            Matcher matcher = tokenPattern.matcher(trimmed);
+            if (matcher.find()) {
+                return id;
+            }
+        }
+
+        return null;
+    }
+
+    private static int firstSeparatorIndex(String value) {
+        int idx = -1;
+        for (String sep : new String[]{":", " - ", " — ", " – "}) {
+            int candidate = value.indexOf(sep);
+            if (candidate >= 0 && (idx < 0 || candidate < idx)) {
+                idx = candidate;
+            }
+        }
+        return idx;
+    }
+
+    private List<float[]> buildTokenVectors(String text) throws Exception {
+        return tokenEmbeddingPort.embedTokenUnits(ColbertTokenizationUtils.buildTokenUnits(text));
+    }
+
+    private static double computeColbertInspiredScore(List<float[]> queryTokenVectors, List<float[]> docTokenVectors) {
+        if (queryTokenVectors.isEmpty() || docTokenVectors.isEmpty()) {
+            return 0.0;
+        }
+
+        // ColBERT-style late interaction approximation:
+        // score(query, doc) = average over query tokens of max similarity to any doc token.
+        double sumMaxSim = 0.0;
+        for (float[] queryToken : queryTokenVectors) {
+            double maxSim = -1.0;
+            for (float[] docToken : docTokenVectors) {
+                double sim = cosineSimilarity(queryToken, docToken);
+                if (sim > maxSim) {
+                    maxSim = sim;
+                }
+            }
+
+            // Normalize each token max similarity from [-1,1] to [0,1].
+            sumMaxSim += (maxSim + 1.0) / 2.0;
+        }
+
+        return sumMaxSim / queryTokenVectors.size();
     }
 }

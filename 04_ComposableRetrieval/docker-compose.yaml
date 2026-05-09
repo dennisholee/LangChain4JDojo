@@ -1,0 +1,12 @@
+services:
+  chromadb:
+    image: chromadb/chroma:0.5.5
+    container_name: composable-retriever-chromadb
+    ports:
+      - "8000:8000"
+    volumes:
+      - chromadb-data:/chroma/chroma
+    restart: unless-stopped
+
+volumes:
+  chromadb-data:

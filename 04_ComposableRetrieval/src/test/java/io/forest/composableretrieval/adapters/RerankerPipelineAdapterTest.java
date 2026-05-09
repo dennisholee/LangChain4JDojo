@@ -8,6 +8,7 @@ import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.output.Response;
+import io.forest.composableretrieval.core.port.TokenEmbeddingPort;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -25,6 +26,7 @@ class RerankerPipelineAdapterTest {
     private MockEmbeddingModel embeddingModel;
     private MockChatLanguageModel chatModel;
     private RerankerPipelineAdapter reranker;
+    private RerankerPipelineAdapter rerankerNoJudge;
 
     @BeforeEach
     void setUp() {
@@ -36,6 +38,14 @@ class RerankerPipelineAdapterTest {
             0.8,    // diversity similarity threshold
             0.7,    // diversity penalty factor
             true    // enable LLM judge
+        );
+
+        rerankerNoJudge = new RerankerPipelineAdapter(
+            embeddingModel,
+            chatModel,
+            0.8,
+            0.7,
+            false
         );
     }
 
@@ -64,6 +74,31 @@ class RerankerPipelineAdapterTest {
     }
 
     @Test
+    void testStage1ColBertInspiredPhraseSensitivity() throws Exception {
+        // Disable diversity and LLM judge to isolate stage-1 behavior.
+        RerankerPipelineAdapter stage1OnlyReranker = new RerankerPipelineAdapter(
+            new PhraseAwareEmbeddingModel(),
+            chatModel,
+            1.1,
+            0.7,
+            false
+        );
+
+        List<RetrieverPort.RetrievalResult> results = List.of(
+            new RetrieverPort.RetrievalResult("doc_phrase", "machine learning systems overview", 0.4),
+            new RetrieverPort.RetrievalResult("doc_java", "java concurrency and thread pools", 0.9),
+            new RetrieverPort.RetrievalResult("doc_partial", "machine optimization techniques", 0.6)
+        );
+
+        List<RetrieverPort.RetrievalResult> reranked = stage1OnlyReranker.rerank("machine learning", results);
+
+        assertEquals("doc_phrase", reranked.get(0).id(),
+            "Phrase-aligned document should rank first under ColBERT-inspired token interaction");
+        assertTrue(indexOf(reranked, "doc_partial") < indexOf(reranked, "doc_java"),
+            "Partial semantic match should outrank unrelated lexical high-score document");
+    }
+
+    @Test
     void testDiversityPenaltyReducesSimilarResults() throws Exception {
         // Create results where doc1 and doc2 are similar (should be penalized)
         List<RetrieverPort.RetrievalResult> results = List.of(
@@ -72,11 +107,95 @@ class RerankerPipelineAdapterTest {
             new RetrieverPort.RetrievalResult("doc3", "completely different topic about cooking", 0.7)
         );
 
-        List<RetrieverPort.RetrievalResult> reranked = reranker.rerank("machine learning", results);
+        List<RetrieverPort.RetrievalResult> reranked = rerankerNoJudge.rerank("machine learning", results);
 
-        // Verify similar results are penalized (doc2 should have lower score than initial)
+        // Verify similar results are penalized relative to less-similar items.
         assertNotNull(reranked);
         assertEquals(3, reranked.size());
+
+        int similarPosition = indexOf(reranked, "doc2");
+        int dissimilarPosition = indexOf(reranked, "doc3");
+        assertTrue(similarPosition > dissimilarPosition,
+            "Similar doc2 should be pushed below dissimilar doc3 after diversity penalty");
+    }
+
+    @Test
+    void testLlmJudgeParsesCommonNumberedAndReasonedOutput() throws Exception {
+        RerankerPipelineAdapter robustParserReranker = new RerankerPipelineAdapter(
+            embeddingModel,
+            new NumberedReasoningChatLanguageModel(),
+            0.8,
+            0.7,
+            true
+        );
+
+        List<RetrieverPort.RetrievalResult> results = List.of(
+            new RetrieverPort.RetrievalResult("doc1", "alpha", 0.8),
+            new RetrieverPort.RetrievalResult("doc2", "beta", 0.7),
+            new RetrieverPort.RetrievalResult("doc3", "gamma", 0.6)
+        );
+
+        List<RetrieverPort.RetrievalResult> reranked = robustParserReranker.rerank("test", results);
+
+        assertEquals(3, reranked.size());
+        assertEquals("doc2", reranked.get(0).id());
+        assertEquals("doc1", reranked.get(1).id());
+        assertEquals("doc3", reranked.get(2).id());
+    }
+
+    @Test
+    void testLlmJudgeFallbackScoresStayDistinctForUnrankedDocs() throws Exception {
+        RerankerPipelineAdapter partialRankingReranker = new RerankerPipelineAdapter(
+            embeddingModel,
+            new PartialRankingChatLanguageModel(),
+            0.8,
+            0.7,
+            true
+        );
+
+        List<RetrieverPort.RetrievalResult> results = List.of(
+            new RetrieverPort.RetrievalResult("doc1", "alpha", 0.8),
+            new RetrieverPort.RetrievalResult("doc2", "beta", 0.7),
+            new RetrieverPort.RetrievalResult("doc3", "gamma", 0.6),
+            new RetrieverPort.RetrievalResult("doc4", "delta", 0.5)
+        );
+
+        List<RetrieverPort.RetrievalResult> reranked = partialRankingReranker.rerank("test", results);
+
+        assertEquals(4, reranked.size());
+        assertEquals("doc2", reranked.get(0).id());
+        assertTrue(reranked.get(1).score() > reranked.get(2).score(),
+            "Fallback scores should be distinct to reduce tie-related instability");
+        assertTrue(reranked.get(2).score() > reranked.get(3).score(),
+            "Fallback scores should decay for deterministic ordering");
+    }
+
+    @Test
+    void testDocumentTokenCacheReducesTokenEmbeddingWorkAcrossQueries() throws Exception {
+        CountingTokenEmbeddingPort tokenEmbeddingPort = new CountingTokenEmbeddingPort(embeddingModel);
+        RerankerPipelineAdapter rerankerWithCache = new RerankerPipelineAdapter(
+            embeddingModel,
+            tokenEmbeddingPort,
+            chatModel,
+            0.8,
+            0.7,
+            false
+        );
+
+        List<RetrieverPort.RetrievalResult> results = List.of(
+            new RetrieverPort.RetrievalResult("doc1", "machine learning and deep learning", 0.7),
+            new RetrieverPort.RetrievalResult("doc2", "neural networks for retrieval", 0.6)
+        );
+
+        rerankerWithCache.rerank("machine learning retrieval", results);
+        int afterFirstRun = tokenEmbeddingPort.totalEmbeddedTokenUnits;
+
+        rerankerWithCache.rerank("machine learning retrieval", results);
+        int secondRunDelta = tokenEmbeddingPort.totalEmbeddedTokenUnits - afterFirstRun;
+
+        // Query tokens are re-embedded each run, but document token units should come from cache.
+        assertTrue(secondRunDelta < afterFirstRun,
+            "Second run should embed fewer token units because document token vectors are cached");
     }
 
     @Test
@@ -140,5 +259,102 @@ class RerankerPipelineAdapterTest {
             // Not used in our test flow since we use generate(String)
             return new Response<>(new AiMessage("mock response"));
         }
+    }
+
+    static class NumberedReasoningChatLanguageModel implements ChatLanguageModel {
+        @Override
+        public String generate(String prompt) {
+            return "1. [doc2]: best semantic match\n2) doc1 - strong relevance\n3. doc3";
+        }
+
+        @Override
+        public Response<AiMessage> generate(List<ChatMessage> messages) {
+            return new Response<>(new AiMessage("mock response"));
+        }
+    }
+
+    static class PartialRankingChatLanguageModel implements ChatLanguageModel {
+        @Override
+        public String generate(String prompt) {
+            return "doc2";
+        }
+
+        @Override
+        public Response<AiMessage> generate(List<ChatMessage> messages) {
+            return new Response<>(new AiMessage("mock response"));
+        }
+    }
+
+    static class PhraseAwareEmbeddingModel implements EmbeddingModel {
+        private static final int DIM = 6;
+
+        @Override
+        public Response<Embedding> embed(String text) {
+            String t = text == null ? "" : text.toLowerCase();
+            float[] vector = new float[DIM];
+
+            if (t.contains("machine learning")) {
+                vector[0] = 1.0f;
+                vector[1] = 1.0f;
+            }
+            if (t.contains("machine")) {
+                vector[0] += 0.8f;
+            }
+            if (t.contains("learning")) {
+                vector[1] += 0.8f;
+            }
+            if (t.contains("java")) {
+                vector[2] += 1.0f;
+            }
+            if (t.contains("concurrency")) {
+                vector[3] += 1.0f;
+            }
+
+            // Deterministic low-amplitude tail to avoid all-zero vectors.
+            int hash = t.hashCode();
+            vector[4] = (float) Math.sin(hash) * 0.01f;
+            vector[5] = (float) Math.cos(hash) * 0.01f;
+
+            return new Response<>(new Embedding(vector));
+        }
+
+        @Override
+        public Response<Embedding> embed(TextSegment textSegment) {
+            return embed(textSegment.text());
+        }
+
+        @Override
+        public Response<List<Embedding>> embedAll(List<TextSegment> textSegments) {
+            return new Response<>(textSegments.stream().map(this::embed).map(Response::content).toList());
+        }
+    }
+
+    static class CountingTokenEmbeddingPort implements TokenEmbeddingPort {
+        private final EmbeddingModel embeddingModel;
+        private int totalEmbeddedTokenUnits;
+
+        CountingTokenEmbeddingPort(EmbeddingModel embeddingModel) {
+            this.embeddingModel = embeddingModel;
+            this.totalEmbeddedTokenUnits = 0;
+        }
+
+        @Override
+        public List<float[]> embedTokenUnits(List<String> tokenUnits) throws Exception {
+            List<float[]> vectors = new ArrayList<>(tokenUnits.size());
+            for (String tokenUnit : tokenUnits) {
+                totalEmbeddedTokenUnits++;
+                vectors.add(embeddingModel.embed(tokenUnit).content().vector());
+            }
+            return vectors;
+        }
+    }
+
+    private static int indexOf(List<RetrieverPort.RetrievalResult> results, String id) {
+        for (int i = 0; i < results.size(); i++) {
+            if (results.get(i).id().equals(id)) {
+                return i;
+            }
+        }
+        return -1;
     }
 }
