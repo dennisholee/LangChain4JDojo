@@ -1,0 +1,115 @@
+name: architect-loop
+description: >-
+  Drafts and reviews API design guidelines using the Ralph Loop pattern.
+  The planner (ArchitectAgent) drafts guidelines, the reviewer (ArchitectReviewerAgent) 
+  audits them, and if feedback indicates issues, the workflow loops back for refinement.
+  Once reviewer output is valid, a human approver can approve, reject, or request rework.
+  Loop terminates on approval/rejection or when max iterations are reached.
+
+max_iterations: 3
+entry_node: drafter
+
+nodes:
+  - id: drafter
+    agent_type: architect
+    description: Drafts or refines API design guidelines
+    agent_profile:
+      connect_timeout_minutes: 5
+
+  - id: reviewer
+    agent_type: architect_reviewer
+    description: Audits API guidelines and produces structured review feedback
+    agent_profile:
+      connect_timeout_minutes: 5
+
+  - id: human_gate
+    agent_type: human_approver
+    description: Captures human approval, rejection, or rework requests
+
+edges:
+  # Entry: START -> drafter
+  - source: START
+    target: drafter
+    description: Begin by drafting guidelines
+
+  # Drafter exception or error -> END (fail fast)
+  - source: drafter
+    target: END
+    condition:
+      type: error
+    description: If drafting fails, exit immediately
+
+  # Drafter success -> reviewer for validation
+  - source: drafter
+    target: reviewer
+    condition:
+      type: not_error
+    description: Proceed to review if drafting succeeds
+
+  # Reviewer accepts -> human gate for explicit approval
+  - source: reviewer
+    target: human_gate
+    condition:
+      type: isValid
+    description: Send valid draft to human gate for explicit decision
+
+  # Reviewer rejects and iterations not exhausted -> back to drafter
+  - source: reviewer
+    target: drafter
+    condition:
+      type: not_isValid_and_within_iteration_limit
+    description: Loop back to drafter if review invalid and iterations remain
+
+  # Reviewer rejects and iterations exhausted -> END (bounded termination)
+  - source: reviewer
+    target: END
+    condition:
+      type: not_isValid_and_exceed_iteration_limit
+    description: Exit with final feedback if max iterations reached
+
+  # Human gate approves -> END
+  - source: human_gate
+    target: END
+    condition:
+      type: human_approved
+    description: Exit when human approver accepts the guideline
+
+  # Human gate requests rework and iterations remain -> back to drafter
+  - source: human_gate
+    target: drafter
+    condition:
+      type: human_rework_and_within_iteration_limit
+    description: Loop back when human approver requests changes and iterations remain
+
+  # Human gate requests rework but iteration limit reached -> END
+  - source: human_gate
+    target: END
+    condition:
+      type: human_rework_and_exceed_iteration_limit
+    description: Exit when rework requested but max iterations reached
+
+  # Human gate rejects -> END
+  - source: human_gate
+    target: END
+    condition:
+      type: human_rejected
+    description: Exit when human approver rejects the guideline
+
+state_channels:
+  - name: iterationCount
+    type: base
+    defaultValue: 0
+    mergeStrategy: overwrite
+    description: Tracks loop iteration counter
+
+  - name: humanDecision
+    type: base
+    defaultValue: ""
+    mergeStrategy: overwrite
+    description: Human decision for current draft (approve/rework/reject)
+
+  - name: humanFeedback
+    type: base
+    defaultValue: ""
+    mergeStrategy: overwrite
+    description: Optional feedback entered by human approver

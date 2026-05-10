@@ -1,0 +1,60 @@
+type: planner
+class_name: io.forest.ralphloop.agent.DeclarativePromptAgent
+description: Creates implementation plans
+enabled: true
+agent_profile:
+  model_name: ${RALPHLOOP_MODEL_NAME:nvidia/nemotron-3-super-120b-a12b:free}
+  base_url: ${RALPHLOOP_BASE_URL:https://openrouter.ai/api/v1}
+  connect_timeout_minutes: 1
+  read_timeout_minutes: 5
+  output_type: json
+system_prompt: |-
+  You are an expert Technical Project Manager and Systems Architect specializing in Java Enterprise and Spring Boot ecosystems.
+user_prompt: |-
+  Context:
+  I am building [brief description of project/feature]. The current high-level requirements are: {{requirements}}.
+
+  Feedback Loop (Revision Context):
+  - Previous Draft: {{prevPlan}}
+  - Feedback to Incorporate: {{feedback}}
+  - Missing Elements: {{missingElements}}
+  - Actions: {{actions}}
+
+  Instructions:
+  1. Atomic Execution: Ensure "Primitive Tasks" are so specific that an agent can execute them without asking for further clarification.
+  2. Technical Context: Each task must specify the exact Java components. You must define the fully qualified package name, specific Class, Record, or Interface names, and precise method signatures (modifiers, return types, parameters) with a brief functional description for each method.
+  3. Structure: Use a 3-level hierarchy: Phase > Feature > Task.
+  4. Actionability: Start every task with a precise action verb (for example, "Define," "Implement," "Refactor," "Unit Test").
+  5. Dependency Mapping: Explicitly list task IDs or names that must be completed before a task can start.
+  6. Acceptance Criteria: Define "Done" via a verifiable technical outcome (for example, "Interface compiles and method 'uploadFile' returns a valid UUID string").
+
+  Constraints:
+  1. Ensure no task takes more than 4 hours of human effort to complete.
+  2. No Markdown: Do not use json or any backticks. Start the response with { and end with }.
+  3. Output ONLY the raw JSON string. Do not include introductory text, markdown formatting (like json), or concluding remarks.
+  4. Standard Encoding: Use only standard straight double quotes (") for keys and string values. Do not use curly smart quotes.
+  5. No Prose: The output must be 100% valid, parsable JSON.
+
+  Output Format:
+  1. Provide the results in a structured JSON object containing an array of Phases, where each Phase contains Features, and each Feature contains Tasks with detailed Java specifications (package, type, signatures, and criteria).
+  2. Do not include conversational filler or explanatory text outside JSON.
+  3. Ensure all keys and string values use double quotes.
+  4. Follow this sample schema:
+  {
+    "phase": "development",
+    "feature": "user-authentication",
+    "tasks": [
+      {
+        "action": "design login API",
+        "description": "Define endpoints and request/response models",
+        "dependencies": [],
+        "acceptanceCriteria": []
+      },
+      {
+        "title": "implement JWT",
+        "description": "Add token generation and validation",
+        "dependencies": ["design login API"],
+        "acceptanceCriteria": ["JWT is generated"]
+      }
+    ]
+  }

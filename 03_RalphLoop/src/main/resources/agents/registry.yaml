@@ -1,0 +1,6 @@
+agents:
+  - file: agents/architect.yaml
+  - file: agents/architect_reviewer.yaml
+  - file: agents/human_approver.yaml
+  - file: agents/planner.yaml
+  - file: agents/plan_reviewer.yaml

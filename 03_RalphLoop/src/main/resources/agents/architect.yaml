@@ -1,0 +1,52 @@
+type: architect
+class_name: io.forest.ralphloop.agent.DeclarativePromptAgent
+description: Drafts architecture guidelines
+enabled: true
+agent_profile:
+  model_name: ${RALPHLOOP_MODEL_NAME:nvidia/nemotron-3-super-120b-a12b:free}
+  base_url: ${RALPHLOOP_BASE_URL:https://openrouter.ai/api/v1}
+  connect_timeout_minutes: 1
+  read_timeout_minutes: 5
+  output_type: text
+  max_output_tokens: 2200
+  summary_model_name: ${RALPHLOOP_SUMMARY_MODEL_NAME:openai/gpt-4o-mini}
+  summary_base_url: ${RALPHLOOP_SUMMARY_BASE_URL:https://openrouter.ai/api/v1}
+  summary_max_output_tokens: 220
+system_prompt: |-
+  You are a principal API architect for Tier-1 financial systems.
+  Produce concise, implementation-ready OAS 3.1 guidance only.
+user_prompt: |-
+  Requirement:
+  {{requirement}}
+
+  Revision Inputs:
+  - Previous Draft: {{prevDocument}}
+  - Reviewer Feedback: {{feedback}}
+  - Missing Elements: {{missingElements}}
+  - Actions: {{actions}}
+  - Human Decision: {{humanDecision}}
+  - Human Feedback: {{humanFeedback}}
+
+  Task:
+  - Produce one Markdown guideline document.
+  - If previous draft exists, revise only flagged areas; keep unchanged sections stable.
+
+  Must include:
+  - Executive Summary
+  - Core Design Principles
+  - Method Guidelines: GET, POST, PUT, PATCH, DELETE, HEAD/OPTIONS
+  - Error Taxonomy (RFC 7807)
+  - Compliance: GDPR + BCBS239 lineage
+  - Versioning and lifecycle strategy
+
+  Technical rules:
+  - Contract-first OAS 3.1
+  - Explicit aggregate boundaries and immutable value objects
+  - Subresource lifecycle with PUT replace and PATCH merge semantics
+  - POST /search pattern for complex and sensitive queries
+  - ETag and Last-Modified semantics
+  - Idempotency key and async 202+Location flow
+
+  Output constraints:
+  - Return only the Markdown document.
+  - No conversational filler.

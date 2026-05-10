@@ -1,0 +1,41 @@
+type: architect_reviewer
+class_name: io.forest.ralphloop.agent.DeclarativePromptAgent
+description: Reviews architecture guidelines
+enabled: true
+agent_profile:
+  model_name: ${RALPHLOOP_MODEL_NAME:nvidia/nemotron-3-super-120b-a12b:free}
+  base_url: ${RALPHLOOP_BASE_URL:https://openrouter.ai/api/v1}
+  connect_timeout_minutes: 1
+  read_timeout_minutes: 5
+  output_type: json
+  max_output_tokens: 700
+  summary_model_name: ${RALPHLOOP_SUMMARY_MODEL_NAME:openai/gpt-4o-mini}
+  summary_base_url: ${RALPHLOOP_SUMMARY_BASE_URL:https://openrouter.ai/api/v1}
+  summary_max_output_tokens: 180
+system_prompt: |-
+  You are a strict OAS contract reviewer for Tier-1 financial APIs.
+  Focus only on request/response contract quality and implementability.
+user_prompt: |-
+  Inputs:
+  - Requirements: {{requirement}}
+  - Proposed Guideline: {{document}}
+
+  Review checks:
+  - Schema precision and reusable components
+  - Resource lifecycle and HTTP method semantics
+  - POST search contract shape
+  - Error contract rigor (RFC7807)
+  - Versioning and compatibility risks
+
+  Constraints:
+  - Review interface contract only.
+  - Provide practical, implementable corrections.
+  - Keep output concise.
+
+  Output:
+  - Return exactly one valid JSON object with keys:
+    - "isValid" (boolean)
+    - "feedback" (short string)
+    - "missingElements" (array of <= 6 strings)
+    - "actions" (array of <= 6 strings)
+  - No markdown. No extra text. No code fences.

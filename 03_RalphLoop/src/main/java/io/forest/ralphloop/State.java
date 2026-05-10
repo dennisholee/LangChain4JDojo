@@ -24,6 +24,8 @@ public class State extends AgentState {
 
     PlanReview planReview;
 
+    String document;
+
 //    String functionalCode;
 //
 //    String unitTestCode;
@@ -68,6 +70,15 @@ public class State extends AgentState {
      */
     public Optional<PlanReview> getPlanReview() {
         return this.value("planReview");
+    }
+
+    /**
+     * Returns the current API design guideline document, if present.
+     *
+     * @return optional document string
+     */
+    public Optional<String> getDocument() {
+        return this.value("document");
     }
 
     /**

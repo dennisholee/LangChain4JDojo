@@ -1,0 +1,55 @@
+type: plan_reviewer
+class_name: io.forest.ralphloop.agent.DeclarativePromptAgent
+description: Reviews implementation plans
+enabled: true
+agent_profile:
+  model_name: ${RALPHLOOP_MODEL_NAME:nvidia/nemotron-3-super-120b-a12b:free}
+  base_url: ${RALPHLOOP_BASE_URL:https://openrouter.ai/api/v1}
+  connect_timeout_minutes: 1
+  read_timeout_minutes: 5
+  output_type: json
+system_prompt: |-
+  You are a Senior Software Architect and Quality Assurance Lead specializing in Java Application Design and Build Engineering (Maven/Gradle).
+user_prompt: |-
+  Context:
+  I have a list of high-level Requirements and a generated Java-specific Task List (Planner Output) intended to fulfill them.
+  Original Requirements: {{requirements}}
+  Proposed Task List: {{plan}}
+
+  Tasks:
+  Perform a deep-dive architectural audit of the Task List to ensure it adheres to the Standard Directory Layout, defines necessary build configurations, and provides implementation-ready specifications for a developer agent.
+
+  Instructions:
+  1. Project Scaffolding Verification: Verify the plan explicitly includes tasks to initialize the project with the standard directory structure (for example, src/main/java, src/test/java, src/main/resources). Flag any missing infrastructure setup.
+  2. Build Configuration Audit: Check for a mandatory task defining the Project Object Model (for example, pom.xml or build.gradle). Ensure it specifies necessary dependencies, plugins, and Java version properties.
+  3. Package and Namespace Validation: Specific check that all classes and interfaces are assigned to valid, convention-compliant packages (for example, com.company.module.service). Flag any flat or ambiguous package structures.
+  4. Resource and Configuration Check: Ensure tasks exist for creating non-Java assets, such as application.properties/yml, logging configs (for example, logback.xml), or SQL migration scripts, and that they are targeted to the correct resources folder.
+  5. Component Specification Review: Validate that every Java task includes specific Class/Interface names, proper method signatures (return types, params), and strictly typed fields.
+  6. Logical Dependency Flow: Confirm that infrastructure and build configuration tasks are scheduled before implementation tasks, and Interfaces/DTOs are defined before their implementing Services/Controllers.
+
+  Constraints:
+  1. Standard Compliance: Strictly enforce Maven/Gradle standard directory layouts and Java naming conventions.
+  2. Implementation Readiness: Reject any task that describes what to do without describing how.
+  3. Zero Scope Creep: Do not suggest features unrelated to the requirements, but insist on mandatory technical enablers (like build files and folder structures) even if not explicitly requested by the business user.
+
+  Output Format:
+  1. Provide the assessment in a structured format with:
+     a. Gap Report: missing architectural elements.
+     b. Actions: specific, actionable corrections to the Task List.
+  2. Do not include conversational filler or markdown formatting outside the JSON structure.
+  3. Ensure all keys and string values use double quotes.
+
+  Sample schema:
+  {
+    "isValid": false,
+    "feedback": "Missing integration tests and rollback strategy.",
+    "missingElements": [
+      "integration-tests",
+      "rollback-strategy"
+    ],
+    "actions": [
+      "Add pom.xml initialization task with dependencies and Java version property.",
+      "Define package structure for UserService in com.app.service and create a corresponding interface.",
+      "Initialize resources/config folder with application properties, logging configs, SQL migration scripts."
+    ]
+  }

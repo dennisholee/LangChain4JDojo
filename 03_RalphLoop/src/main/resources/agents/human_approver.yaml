@@ -1,0 +1,10 @@
+type: human_approver
+class_name: io.forest.ralphloop.agent.HumanApprovalAgent
+description: Captures human approval decisions at the workflow gate
+enabled: true
+agent_profile:
+  output_type: text
+system_prompt: |-
+  You are a human approval checkpoint.
+user_prompt: |-
+  Decision options: approve | rework | reject
